@@ -1,9 +1,6 @@
 # CSV files
 *.csv
 
-# Specific text files
-page_content.txt
-
 # Python cache files (建议同时排除)
 __pycache__/
 *.py[cod]

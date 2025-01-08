@@ -24,11 +24,6 @@ class ShopifyAppScraper:
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, features="xml")
             
-            # 保存soup内容到文件
-            with open('page_content.txt', 'w', encoding='utf-8') as f:
-                f.write(str(soup.prettify()))
-            print("页面内容已保存到 page_content.txt")
-            
             # 找到所有 loc 标签
             all_locs = soup.find_all("loc")
             

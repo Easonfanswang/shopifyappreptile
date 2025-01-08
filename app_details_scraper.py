@@ -4,6 +4,18 @@ from bs4 import BeautifulSoup
 import os
 import glob
 import time
+import subprocess
+
+
+def run_scraper():
+    print("未找到CSV文件，正在运行 scraper.py...")
+    try:
+        subprocess.run(["python", "scraper.py"], check=True)
+        print("scraper.py 运行完成")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"运行 scraper.py 时出错: {e}")
+        return False
 
 
 def get_latest_csv(prefix="shopify_apps_", silent=False):
@@ -11,7 +23,16 @@ def get_latest_csv(prefix="shopify_apps_", silent=False):
     if not csv_files:
         if not silent:
             print(f"没有找到前缀为 {prefix} 的CSV文件")
-        return None
+            # 运行 scraper.py
+            if run_scraper():
+                # 重新检查CSV文件
+                csv_files = glob.glob(f"{prefix}*.csv")
+                if not csv_files:
+                    print("即使运行了 scraper.py 后仍未找到CSV文件")
+                    return None
+            else:
+                return None
+
     latest_csv = max(csv_files, key=os.path.getmtime)
     if not silent:
         print(f"使用最新的CSV文件: {latest_csv}")
@@ -32,7 +53,7 @@ def scrape_app_details(batch_size=None, delay=0.5):
     }
 
     total_items = batch_size if batch_size else len(df)
-    
+
     for index, row in df.iterrows():
         if batch_size and index >= batch_size:
             print(f"已达到批次限制 ({batch_size})")
@@ -49,17 +70,32 @@ def scrape_app_details(batch_size=None, delay=0.5):
                 # 添加评分和评论数据爬取
                 rating = None
                 reviews_count = None
+                main_description = None
+                detailed_description = None
+                detail_points = []
 
                 rating_section = soup.find(
                     "dd",
                     {"class": "tw-flex tw-items-center tw-gap-2xs tw-text-body-sm"},
                 )
-                
+
                 title = soup.find(
                     "h1",
                     {
                         "class": "tw-text-heading-lg tw-whitespace-normal tw-hyphens tw-text-balance -tw-my-xs"
                     },
+                )
+                main_desc_element = soup.find(
+                    "h2", {"class": "tw-text-heading-lg tw-text-pretty"}
+                )
+                detailed_desc_element = soup.find(
+                    "p",
+                    {
+                        "class": "tw-hidden lg:tw-block tw-text-body-md tw-text-fg-secondary"
+                    },
+                )
+                detail_elements = soup.find_all(
+                    "li", {"class": "tw-text-body-md tw-text-fg-secondary tw-mb-xs"}
                 )
                 if rating_section:
                     # 获取评分
@@ -76,22 +112,47 @@ def scrape_app_details(batch_size=None, delay=0.5):
                         reviews_count = cleaned_text if cleaned_text else "0"
                     else:
                         reviews_count = "0"
+
                 if title:
                     title_text = title.text.strip()
-                    results.append(
-                        {
-                            "url": url,
-                            "title": title_text,
-                            "rating": rating,
-                            "reviews_count": reviews_count,
-                            "timestamp": timestamp,
-                        }
-                    )
-                    print(
-                        f"找到标题: {title_text}, 评分: {rating}, 评论数: {reviews_count}"
-                    )
                 else:
                     print(f"未找到标题: {url}")
+
+                if main_desc_element:
+                    main_description = main_desc_element.text.strip()
+
+                # 获取详细描述
+
+                if detailed_desc_element:
+                    detailed_description = detailed_desc_element.text.strip()
+
+                # 获取细节描述列表
+                if detail_elements:
+                    detail_points = [
+                        element.text.strip() for element in detail_elements
+                    ]
+                results.append(
+                    {
+                        "url": url,
+                        "title": title_text,
+                        "rating": rating,
+                        "reviews_count": reviews_count,
+                        "main_description": main_description,
+                        "detailed_description": detailed_description,
+                        "detail_points": (
+                            "|".join(detail_points) if detail_points else None
+                        ),  # 用竖线分隔多个细节点
+                        "timestamp": timestamp,
+                    }
+                )
+                print(
+                    f"找到标题: {title_text}\n"
+                    f"评分: {rating}\n"
+                    f"评论数: {reviews_count}\n"
+                    f"主要描述: {main_description}\n"
+                    f"详细描述: {detailed_description}\n"
+                    f"细节描述点数: {len(detail_points)}"
+                )
             else:
                 print(f"请求失败 {url}: {response.status_code}")
 
@@ -112,4 +173,4 @@ def scrape_app_details(batch_size=None, delay=0.5):
 
 
 if __name__ == "__main__":
-    scrape_app_details(delay=2) 
+    scrape_app_details(batch_size=5, delay=2)
