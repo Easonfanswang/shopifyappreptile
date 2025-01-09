@@ -46,8 +46,9 @@ def scrape_app_details(batch_size=None, delay=0.5):
 
     df = pd.read_csv(csv_file)
     results = []
+    errors = []  # 存储错误信息
     timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-
+    max_retries = 1  # 最大重试次数
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
@@ -56,110 +57,292 @@ def scrape_app_details(batch_size=None, delay=0.5):
 
     for index, row in df.iterrows():
         if batch_size and index >= batch_size:
-            print(f"已达到批次限制 ({batch_size})")
             break
 
         url = row["app_handle"]
-        print(f"正在处理 {index + 1}/{total_items} - {url}")
+        retry_count = 0
+        success = False
 
-        try:
-            response = requests.get(url, headers=headers)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, "html.parser")
-
-                # 添加评分和评论数据爬取
-                rating = None
-                reviews_count = None
-                main_description = None
-                detailed_description = None
-                detail_points = []
-
-                rating_section = soup.find(
-                    "dd",
-                    {"class": "tw-flex tw-items-center tw-gap-2xs tw-text-body-sm"},
-                )
-
-                title = soup.find(
-                    "h1",
-                    {
-                        "class": "tw-text-heading-lg tw-whitespace-normal tw-hyphens tw-text-balance -tw-my-xs"
-                    },
-                )
-                main_desc_element = soup.find(
-                    "h2", {"class": "tw-text-heading-lg tw-text-pretty"}
-                )
-                detailed_desc_element = soup.find(
-                    "p",
-                    {
-                        "class": "tw-hidden lg:tw-block tw-text-body-md tw-text-fg-secondary"
-                    },
-                )
-                detail_elements = soup.find_all(
-                    "li", {"class": "tw-text-body-md tw-text-fg-secondary tw-mb-xs"}
-                )
-                if rating_section:
-                    # 获取评分
-                    rating_span = rating_section.find("span")
-                    if rating_span:
-                        rating = rating_span.text.strip()
-
-                    # 获取评论数
-                    review_link = rating_section.find_all("span")[2].find("a")
-                    if review_link:
-                        reviews_text = review_link.text.strip()
-                        # 移除括号并转换为数字
-                        cleaned_text = reviews_text.strip("()").replace(",", "")
-                        reviews_count = cleaned_text if cleaned_text else "0"
-                    else:
-                        reviews_count = "0"
-
-                if title:
-                    title_text = title.text.strip()
-                else:
-                    print(f"未找到标题: {url}")
-
-                if main_desc_element:
-                    main_description = main_desc_element.text.strip()
-
-                # 获取详细描述
-
-                if detailed_desc_element:
-                    detailed_description = detailed_desc_element.text.strip()
-
-                # 获取细节描述列表
-                if detail_elements:
-                    detail_points = [
-                        element.text.strip() for element in detail_elements
-                    ]
-                results.append(
-                    {
-                        "url": url,
-                        "title": title_text,
-                        "rating": rating,
-                        "reviews_count": reviews_count,
-                        "main_description": main_description,
-                        "detailed_description": detailed_description,
-                        "detail_points": (
-                            "|".join(detail_points) if detail_points else None
-                        ),  # 用竖线分隔多个细节点
-                        "timestamp": timestamp,
-                    }
-                )
+        while retry_count < max_retries and not success:
+            try:
                 print(
-                    f"找到标题: {title_text}\n"
-                    f"评分: {rating}\n"
-                    f"评论数: {reviews_count}\n"
-                    f"主要描述: {main_description}\n"
-                    f"详细描述: {detailed_description}\n"
-                    f"细节描述点数: {len(detail_points)}"
+                    f"正在处理 {index + 1}/{total_items} - {url} (第 {retry_count + 1} 次尝试)"
                 )
-            else:
-                print(f"请求失败 {url}: {response.status_code}")
+
+                response = requests.get(url, headers=headers)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    field_errors = []  # 记录每个字段的错误
+
+                    data = {
+                        "url": url,
+                        "title": None,
+                        "rating": None,
+                        "reviews_count": None,
+                        "main_description": None,
+                        "detailed_description": None,
+                        "detail_points": None,
+                        "category": None,
+                        "release_date": None,
+                        "website": None,  # 新增官网字段
+                        "complete_information": True,
+                    }
+
+                    incomplete_information = soup.find(
+                        "div",
+                        {
+                            "class": "banner tw-bg-canvas-accent-orange tw-border-stroke-accent-orange tw-text-fg-accent-orange tw-py-4 lg:tw-py-8"
+                        },
+                    )
+                    data["complete_information"] = (
+                        False if incomplete_information else True
+                    )
+
+                    if data["complete_information"]:
+                        # 获取标题
+                        try:
+                            title = soup.find(
+                                "h1",
+                                {
+                                    "class": "tw-text-heading-lg tw-whitespace-normal tw-hyphens tw-text-balance -tw-my-xs"
+                                },
+                            )
+                            data["title"] = title.text.strip() if title else None
+                            if not data["title"]:
+                                field_errors.append(
+                                    {"field": "title", "error": "标题未找到"}
+                                )
+                        except Exception as e:
+                            field_errors.append({"field": "title", "error": str(e)})
+
+                        # 获取评分和评论
+                        try:
+                            rating_section = soup.find(
+                                "dd",
+                                {
+                                    "class": "tw-flex tw-items-center tw-gap-2xs tw-text-body-sm"
+                                },
+                            )
+                            if rating_section:
+                                rating_span = rating_section.find("span")
+                                data["rating"] = (
+                                    rating_span.text.strip() if rating_span else None
+                                )
+                                if not data["rating"]:
+                                    field_errors.append(
+                                        {"field": "rating", "error": "评分未找到"}
+                                    )
+                                try:
+                                    review_link = rating_section.find_all("span")[2]
+                                    if review_link.find("a"):
+                                        reviews_text = review_link.text.strip()
+                                        data["reviews_count"] = (
+                                            reviews_text.strip("()")
+                                            .replace(",", "")
+                                            .strip()
+                                        )
+                                    elif review_link:
+                                        data["reviews_count"] = 0
+                                    else:
+                                        field_errors.append(
+                                            {
+                                                "field": "reviews_count",
+                                                "error": "评论数未找到",
+                                            }
+                                        )
+                                except Exception as e:
+                                    field_errors.append(
+                                        {"field": "reviews_count", "error": str(e)}
+                                    )
+                        except Exception as e:
+                            field_errors.append(
+                                {"field": "rating_section", "error": str(e)}
+                            )
+
+                        # 获取主要描述
+                        try:
+                            main_desc = soup.find(
+                                "h2", {"class": "tw-text-heading-lg tw-text-pretty"}
+                            )
+                            data["main_description"] = (
+                                main_desc.text.strip() if main_desc else None
+                            )
+                            if not data["main_description"]:
+                                field_errors.append(
+                                    {
+                                        "field": "main_description",
+                                        "error": "主要描述未找到",
+                                    }
+                                )
+                        except Exception as e:
+                            field_errors.append(
+                                {"field": "main_description", "error": str(e)}
+                            )
+
+                        # 获取详细描述
+                        try:
+                            detailed_desc = soup.find(
+                                "p",
+                                {
+                                    "class": "tw-hidden lg:tw-block tw-text-body-md tw-text-fg-secondary"
+                                },
+                            )
+                            data["detailed_description"] = (
+                                detailed_desc.text.strip() if detailed_desc else None
+                            )
+                            if not data["detailed_description"]:
+                                field_errors.append(
+                                    {
+                                        "field": "detailed_description",
+                                        "error": "详细描述未找到",
+                                    }
+                                )
+                        except Exception as e:
+                            field_errors.append(
+                                {"field": "detailed_description", "error": str(e)}
+                            )
+
+                        # 获取详细点
+                        try:
+                            detail_elements = soup.find_all(
+                                "li",
+                                {
+                                    "class": "tw-text-body-md tw-text-fg-secondary tw-mb-xs"
+                                },
+                            )
+                            if detail_elements:
+                                data["detail_points"] = "|".join(
+                                    [
+                                        element.text.strip()
+                                        for element in detail_elements
+                                    ]
+                                )
+                            else:
+                                field_errors.append(
+                                    {
+                                        "field": "detail_points",
+                                        "error": "详细点列表未找到",
+                                    }
+                                )
+                        except Exception as e:
+                            field_errors.append(
+                                {"field": "detail_points", "error": str(e)}
+                            )
+                            
+                        # 获取分类
+                        try:
+                            category_divs = soup.find_all(
+                                "div",
+                                {"class": "tw-flex tw-justify-between tw-mb-xl"}
+                            )
+                            if category_divs:
+                                categories = []
+                                for div in category_divs:
+                                    a_tags = div.find_all('a')
+                                    if a_tags:
+                                        categories.extend([a.text.strip() for a in a_tags])
+                                data["category"] = "|".join(categories) if categories else None
+                            else:
+                                field_errors.append({
+                                    "field": "category",
+                                    "error": "类目未找到",
+                                })
+                        except Exception as e:
+                            field_errors.append(
+                                {"field": "category", "error": str(e)}
+                            )
+
+                        # 获取发布日期
+                        try:
+                            release_date = soup.find(
+                                "p",
+                                {
+                                    "class": "tw-col-span-full sm:tw-col-span-3 tw-text-fg-secondary tw-text-body-md"
+                                },
+                            )
+                            if release_date:
+                                # 分割文本并只保留日期部分
+                                date_text = release_date.text.split('·')[0].strip()
+                                # 将中文年月日替换为标准格式
+                                date_text = date_text.replace('年', '-').replace('月', '-').replace('日', '')
+                                # 转换为日期对象并格式化为 YYYY-MM-DD 格式
+                                from datetime import datetime
+                                date_obj = datetime.strptime(date_text, '%Y-%m-%d')
+                                data["release_date"] = date_obj.strftime('%Y-%m-%d')
+                            else:
+                                field_errors.append({
+                                    "field": "release_date",
+                                    "error": "发布日期没找到",
+                                })
+                        except Exception as e:
+                            field_errors.append(
+                                {"field": "release_date", "error": str(e)}
+                            )
+
+                        # 获取官网
+                        try:
+                            website_link = soup.find("a", string="网站")
+                            data["website"] = (
+                                website_link["href"] if website_link else None
+                            )
+                        except Exception:
+                            pass  # 如果没有找到网站链接，静默失败
+
+                    # 如果有字段错误且是最后一次重试
+                    if field_errors and retry_count == max_retries - 1:
+                        for error in field_errors:
+                            errors.append(
+                                {
+                                    "url": url,
+                                    "field": error["field"],
+                                    "error_message": error["error"],
+                                }
+                            )
+
+                    # 如果所有必需字段都有值，则认为成功
+                    if (
+                        data["title"]
+                        and data["rating"]
+                        and data["main_description"]
+                        and data["detailed_description"]
+                        and data["detail_points"]
+                        and data["category"]
+                        and data["reviews_count"]
+                        and data["release_date"]
+                        and data["url"]
+                        or incomplete_information
+                    ):
+                        results.append(data)
+                        success = True
+                        print(f"成功获取数据: {data['title']}")
+
+                else:
+                    if retry_count == max_retries - 1:
+                        errors.append(
+                            {
+                                "url": url,
+                                "field": "http_request",
+                                "error_message": f"HTTP错误: {response.status_code}",
+                            }
+                        )
+
+            except Exception as e:
+                if retry_count == max_retries - 1:
+                    errors.append(
+                        {
+                            "url": url,
+                            "field": "request",
+                            "error_message": f"请求失败: {str(e)}",
+                        }
+                    )
+
+            if not success:
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"重试 {retry_count}/{max_retries}")
+                    time.sleep(delay * 2)
 
             time.sleep(delay)
-
-        except Exception as e:
-            print(f"处理 {url} 时出错: {e}")
 
     # 保存结果
     if results:
@@ -168,9 +351,15 @@ def scrape_app_details(batch_size=None, delay=0.5):
         output_df.to_csv(output_file, index=False, encoding="utf-8-sig")
         print(f"结果已保存到: {output_file}")
         print(f"总记录数: {len(output_df)}")
-    else:
-        print("没有找到任何标题")
+
+    # 保存错误记录
+    if errors:
+        error_file = f"scraping_errors_{timestamp}.csv"
+        error_df = pd.DataFrame(errors)
+        error_df.to_csv(error_file, index=False, encoding="utf-8-sig")
+        print(f"错误记录已保存到: {error_file}")
+        print(f"错误数量: {len(errors)}")
 
 
 if __name__ == "__main__":
-    scrape_app_details(batch_size=5, delay=2)
+    scrape_app_details(delay=0.5)
